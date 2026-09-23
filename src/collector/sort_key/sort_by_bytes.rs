@@ -1,6 +1,6 @@
 use columnar::BytesColumn;
 
-use crate::collector::sort_key::NaturalComparator;
+use crate::collector::sort_key::{term_ords_to_terms, NaturalComparator};
 use crate::collector::{SegmentSortKeyComputer, SortKeyComputer};
 use crate::termdict::TermOrdinal;
 use crate::{DocId, Score};
@@ -55,56 +55,21 @@ impl SegmentSortKeyComputer for ByBytesColumnSegmentSortKeyComputer {
         bytes_column.ords().first(doc)
     }
 
-    fn convert_segment_sort_key(&self, term_ord_opt: Option<TermOrdinal>) -> Option<Vec<u8>> {
-        let term_ord = term_ord_opt?;
-        let bytes_column = self.bytes_column_opt.as_ref()?;
-        let mut bytes = Vec::new();
-        bytes_column
-            .dictionary()
-            .ord_to_term(term_ord, &mut bytes)
-            .ok()?;
-        Some(bytes)
+    fn convert_segment_sort_key(&self, term_ord: Option<TermOrdinal>) -> Option<Vec<u8>> {
+        self.convert_segment_sort_keys(vec![term_ord])
+            .pop()
+            .flatten()
     }
 
     fn convert_segment_sort_keys(
         &self,
         term_ords: Vec<Option<TermOrdinal>>,
     ) -> Vec<Option<Vec<u8>>> {
-        match self.bytes_column_opt.as_ref() {
-            Some(bytes_column) => term_ords_to_terms(bytes_column, &term_ords),
-            None => vec![None; term_ords.len()],
-        }
+        let Some(bytes_column) = self.bytes_column_opt.as_ref() else {
+            return vec![None; term_ords.len()];
+        };
+        term_ords_to_terms(bytes_column, &term_ords)
     }
-}
-
-/// Looks up the terms of `term_ords` in `bytes_column`'s dictionary, in order.
-///
-/// The ordinals are sorted and deduplicated first so that the dictionary is walked
-/// once, decompressing each block at most once, instead of once per lookup. An ordinal
-/// that is `None` or cannot be resolved yields `None`.
-pub(crate) fn term_ords_to_terms(
-    bytes_column: &BytesColumn,
-    term_ords: &[Option<TermOrdinal>],
-) -> Vec<Option<Vec<u8>>> {
-    let mut sorted_ords: Vec<TermOrdinal> = term_ords.iter().flatten().copied().collect();
-    sorted_ords.sort_unstable();
-    sorted_ords.dedup();
-    let mut terms: Vec<Vec<u8>> = Vec::with_capacity(sorted_ords.len());
-    // On a missing ordinal or an I/O error the walk stops early: `terms` then holds the
-    // prefix that was resolved, and every later ordinal maps to `None` below.
-    let _ = bytes_column
-        .dictionary()
-        .sorted_ords_to_term_cb(sorted_ords.iter().copied(), |term| {
-            terms.push(term.to_vec());
-            Ok(())
-        });
-    term_ords
-        .iter()
-        .map(|term_ord| {
-            let position = sorted_ords.binary_search(&(*term_ord)?).ok()?;
-            terms.get(position).cloned()
-        })
-        .collect()
 }
 
 #[cfg(test)]

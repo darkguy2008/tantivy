@@ -1,7 +1,6 @@
 use columnar::StrColumn;
 
-use crate::collector::sort_key::sort_by_bytes::term_ords_to_terms;
-use crate::collector::sort_key::NaturalComparator;
+use crate::collector::sort_key::{term_ords_to_terms, NaturalComparator};
 use crate::collector::{SegmentSortKeyComputer, SortKeyComputer};
 use crate::termdict::TermOrdinal;
 use crate::{DocId, Score};
@@ -58,15 +57,10 @@ impl SegmentSortKeyComputer for ByStringColumnSegmentSortKeyComputer {
         str_column.ords().first(doc)
     }
 
-    fn convert_segment_sort_key(&self, term_ord_opt: Option<TermOrdinal>) -> Option<String> {
-        let term_ord = term_ord_opt?;
-        let str_column = self.str_column_opt.as_ref()?;
-        let mut bytes = Vec::new();
-        str_column
-            .dictionary()
-            .ord_to_term(term_ord, &mut bytes)
-            .ok()?;
-        String::try_from(bytes).ok()
+    fn convert_segment_sort_key(&self, term_ord: Option<TermOrdinal>) -> Option<String> {
+        self.convert_segment_sort_keys(vec![term_ord])
+            .pop()
+            .flatten()
     }
 
     fn convert_segment_sort_keys(
@@ -92,7 +86,7 @@ mod tests {
     use crate::{Index, IndexWriter};
 
     #[test]
-    fn test_batch_conversion_matches_single_conversion() -> crate::Result<()> {
+    fn test_batch_conversion_resolves_every_ordinal() -> crate::Result<()> {
         // Enough distinct terms to span many dictionary blocks.
         const NUM_TERMS: u64 = 5_000;
         let mut schema_builder = Schema::builder();
@@ -118,13 +112,15 @@ mod tests {
             Some(2_500),
             Some(8),
         ];
-        let single: Vec<Option<String>> = term_ords
+        let expected: Vec<Option<String>> = term_ords
             .iter()
-            .map(|term_ord| computer.convert_segment_sort_key(*term_ord))
+            .map(|term_ord| term_ord.map(|term| format!("term-{term:08}")))
             .collect();
-        assert_eq!(computer.convert_segment_sort_keys(term_ords), single);
-        assert_eq!(single[0].as_deref(), Some("term-00004321"));
-        assert_eq!(single[2], None);
+        assert_eq!(computer.convert_segment_sort_keys(term_ords), expected);
+        assert_eq!(
+            computer.convert_segment_sort_key(Some(7)).as_deref(),
+            Some("term-00000007")
+        );
         Ok(())
     }
 }
